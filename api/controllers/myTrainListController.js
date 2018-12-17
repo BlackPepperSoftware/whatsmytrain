@@ -1,5 +1,6 @@
 const fs = require("fs");
 const parser = require("xml2json");
+const request = require('request');
 
 let xmlData = fs.readFileSync("./stations.xml");
 var stationList = parser.toJson(xmlData, {object: true});
@@ -10,6 +11,19 @@ exports.lookup_stations = function(req, res) {
   var lat = req.body.lat;
   points = findDistance(points, { lat: lat, lon: lon });
   res.json(points.sort(compareDistance).slice(0, 3));
+};
+
+exports.lookup_trains = function(req, res) {
+  var lon = req.body.lon;
+  var lat = req.body.lat;
+  points = findDistance(points, { lat: lat, lon: lon });
+  var stations = points.sort(compareDistance).slice(0, 3)
+  var trains = showAllTrainsEnRoute(
+    stations[0].station.crs,
+    stations[1].station.crs,
+    stations[2].station.crs,
+    );
+  res.json(trains);
 };
 
 function findDistance(points, target) {
@@ -40,3 +54,127 @@ function buildTree(stationArray) {
   });
   return points;
 }
+
+
+
+var showDebug = false;
+
+function debug(obj, name) {
+  if (showDebug) {
+    console.log("===== " + name);
+    console.log(obj);
+  }
+}
+
+function buildPayload(src, dest) {
+  payload =
+    '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" \
+    xmlns:ns1="http://thalesgroup.com/RTTI/2016-02-16/ldb/" \
+    xmlns:ns2="http://thalesgroup.com/RTTI/2013-11-28/Token/types">\
+    <SOAP-ENV:Header>\
+      <ns2:AccessToken>\
+        <ns2:TokenValue>85bde6f3-e920-46be-961c-3d32a6128f84</ns2:TokenValue>\
+      </ns2:AccessToken>\
+    </SOAP-ENV:Header>\
+    <SOAP-ENV:Body>\
+      <ns1:GetDepartureBoardRequest>\
+        <ns1:numRows>4</ns1:numRows>\
+        <ns1:crs>'
+        + src +
+        '</ns1:crs>\
+        <ns1:filterCrs>'
+        + dest +
+        '</ns1:filterCrs>\
+        <ns1:filterType>to</ns1:filterType>\
+        <ns1:timeOffset>-30</ns1:timeOffset>\
+        <ns1:timeWindow>29</ns1:timeWindow>\
+      </ns1:GetDepartureBoardRequest>\
+    </SOAP-ENV:Body>\
+  </SOAP-ENV:Envelope>';
+
+  return payload;
+}
+
+function showDepartureBoard(src, dest) {
+  // Configure the request
+  var payload = buildPayload(src, dest);
+  var options = {
+    url: 'http://lite.realtime.nationalrail.co.uk/OpenLDBWS/ldb9.asmx',
+    SOAPAction: 'http://thalesgroup.com/RTTI/2012-01-13/ldb/GetDepartureBoard',
+      method: 'POST',
+      headers: {
+        'User-Agent':       'Super Agent/0.0.1',
+        'Content-Type':     'text/xml'},
+      body: payload
+  }
+  var answer;
+  // Start the request
+  request(options, function (error, response, body) {
+      if (!error && response.statusCode == 200) {
+          // Print out the response body
+        var result = parser.toJson(body, {object:true});
+        answer = showTrains(result);
+      } else {
+        console.log("Error finding trains from " + src + " to " + dest);
+        // console.log('error: ' + error);
+        // console.log("response: " + body);
+      }
+  });
+  return answer;
+}
+
+function showTrains(result) {
+  var answer = [];
+  var departureBoardResponse = result['soap:Envelope']['soap:Body']['GetDepartureBoardResponse'];
+  var stationBoard = departureBoardResponse['GetStationBoardResult'];
+  var services = stationBoard['lt5:trainServices'];
+
+  debug(departureBoardResponse, "departureBoardResponse");
+  debug(stationBoard, "stationBoard");
+  debug(services, "services");
+
+  answer.push("Trains from " + stationBoard['lt4:locationName'] + " to " + stationBoard['lt4:filterLocationName']);
+
+  if (services) {
+    debug(services, "service");
+    if (services['lt5:service'].map) {
+      services['lt5:service'].map(function (service) {
+        answer.push(showTrainTimes(service));
+      });
+    } else {
+      var service = services['lt5:service'];
+      answer.push(showTrainTimes(service));
+    }
+  } else {
+    answer.push("    No active trains");
+  }
+  return answer;
+}
+
+function showTrainTimes(service) {
+  var answer = [];
+  var scheduledDep = service['lt4:std'];
+  var actualDep = service['lt4:etd'];
+  if (actualDep == 'On time') {
+    answer.push("    departed " + scheduledDep);
+  } else {
+    answer.push("    departed " + actualDep + " (scheduled departure was " + scheduledDep + ")");
+  }
+  return answer;
+}
+
+function showTrainsBetween(station1, station2) {
+  var answer = [];
+  answer.push(showDepartureBoard(station1, station2));
+  answer.push(showDepartureBoard(station2, station1));
+  return answer;
+}
+
+function showAllTrainsEnRoute(station1, station2, station3) {
+  var answer = [];
+  answer.push(showTrainsBetween(station1, station2));
+  answer.push(showTrainsBetween(station1, station3));
+  answer.push(showTrainsBetween(station2, station3));
+  return answer;
+}
+
