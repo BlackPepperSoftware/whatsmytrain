@@ -1,6 +1,6 @@
 const fs = require("fs");
 const parser = require("xml2json");
-const request = require('request');
+const rp = require('request-promise');
 
 let xmlData = fs.readFileSync("./stations.xml");
 var stationList = parser.toJson(xmlData, {object: true});
@@ -13,18 +13,40 @@ exports.lookup_stations = function(req, res) {
   res.json(points.sort(compareDistance).slice(0, 3));
 };
 
-exports.lookup_trains = function(req, res) {
+exports.lookup_trains = function lookup_trains(req, res) {
   var lon = req.body.lon;
   var lat = req.body.lat;
   points = findDistance(points, { lat: lat, lon: lon });
   var stations = points.sort(compareDistance).slice(0, 3)
-  var trains = showAllTrainsEnRoute(
-    stations[0].station.crs,
-    stations[1].station.crs,
-    stations[2].station.crs,
-    );
-  res.json(trains);
+  
+  Promise.all([
+    showDepartureBoard(stations[0].station.crs, stations[1].station.crs).catch(err => console.log(err)),
+    showDepartureBoard(stations[0].station.crs, stations[2].station.crs).catch(err => console.log(err)),
+    showDepartureBoard(stations[1].station.crs, stations[0].station.crs).catch(err => console.log(err)),
+    showDepartureBoard(stations[1].station.crs, stations[2].station.crs).catch(err => console.log(err)),
+    showDepartureBoard(stations[2].station.crs, stations[0].station.crs).catch(err => console.log(err)),
+    showDepartureBoard(stations[2].station.crs, stations[1].station.crs).catch(err => console.log(err))
+  ])
+  .then(function(responces) {
+    res.json(processDepartureBoards(responces, stations));
+  })
+  .catch(function(err) {
+    console.log('error: ' + err);
+  });
+
 };
+
+function processDepartureBoards(responces, stations) {
+  answer = {'stations' : stations};
+  var trains = [];
+  for(let responce of responces) {
+    let services = parser.toJson(responce, {object:true});
+    let trainList = showTrains(services);
+    trains = trains.concat(trainList);
+  }
+  answer.trains = trains;
+  return answer;
+}
 
 function findDistance(points, target) {
   points.forEach(function(station) {
@@ -53,17 +75,6 @@ function buildTree(stationArray) {
     });
   });
   return points;
-}
-
-
-
-var showDebug = false;
-
-function debug(obj, name) {
-  if (showDebug) {
-    console.log("===== " + name);
-    console.log(obj);
-  }
 }
 
 function buildPayload(src, dest) {
@@ -95,7 +106,7 @@ function buildPayload(src, dest) {
   return payload;
 }
 
-function showDepartureBoard(src, dest) {
+async function showDepartureBoard(src, dest) {
   // Configure the request
   var payload = buildPayload(src, dest);
   var options = {
@@ -107,20 +118,13 @@ function showDepartureBoard(src, dest) {
         'Content-Type':     'text/xml'},
       body: payload
   }
-  var answer;
-  // Start the request
-  request(options, function (error, response, body) {
-      if (!error && response.statusCode == 200) {
-          // Print out the response body
-        var result = parser.toJson(body, {object:true});
-        answer = showTrains(result);
-      } else {
-        console.log("Error finding trains from " + src + " to " + dest);
-        // console.log('error: ' + error);
-        // console.log("response: " + body);
-      }
-  });
-  return answer;
+
+  try {
+    return await rp(options);
+  } catch(err) {
+    console.log("SOAP Error " +err);
+  }
+
 }
 
 function showTrains(result) {
@@ -129,52 +133,24 @@ function showTrains(result) {
   var stationBoard = departureBoardResponse['GetStationBoardResult'];
   var services = stationBoard['lt5:trainServices'];
 
-  debug(departureBoardResponse, "departureBoardResponse");
-  debug(stationBoard, "stationBoard");
-  debug(services, "services");
-
-  answer.push("Trains from " + stationBoard['lt4:locationName'] + " to " + stationBoard['lt4:filterLocationName']);
-
   if (services) {
-    debug(services, "service");
     if (services['lt5:service'].map) {
       services['lt5:service'].map(function (service) {
-        answer.push(showTrainTimes(service));
+        answer.push(showTrainTimes(service, stationBoard));
       });
     } else {
       var service = services['lt5:service'];
-      answer.push(showTrainTimes(service));
+      answer.push(showTrainTimes(service, stationBoard));
     }
-  } else {
-    answer.push("    No active trains");
   }
   return answer;
 }
 
-function showTrainTimes(service) {
-  var answer = [];
-  var scheduledDep = service['lt4:std'];
-  var actualDep = service['lt4:etd'];
-  if (actualDep == 'On time') {
-    answer.push("    departed " + scheduledDep);
-  } else {
-    answer.push("    departed " + actualDep + " (scheduled departure was " + scheduledDep + ")");
-  }
-  return answer;
+function showTrainTimes(service, stationBoard) {
+  return {
+    'from':stationBoard['lt4:locationName'],
+    'to':stationBoard['lt4:filterLocationName'],
+    'scheduledDep': service['lt4:std'],
+    'actualDep' : service['lt4:etd']
+  };
 }
-
-function showTrainsBetween(station1, station2) {
-  var answer = [];
-  answer.push(showDepartureBoard(station1, station2));
-  answer.push(showDepartureBoard(station2, station1));
-  return answer;
-}
-
-function showAllTrainsEnRoute(station1, station2, station3) {
-  var answer = [];
-  answer.push(showTrainsBetween(station1, station2));
-  answer.push(showTrainsBetween(station1, station3));
-  answer.push(showTrainsBetween(station2, station3));
-  return answer;
-}
-
