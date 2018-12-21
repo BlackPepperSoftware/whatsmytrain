@@ -1,10 +1,14 @@
 const fs = require("fs");
 const parser = require("xml2json");
 const rp = require('request-promise');
+const stationJson = require('../../stations.json');
 
-let xmlData = fs.readFileSync("./stations.xml");
-var stationList = parser.toJson(xmlData, {object: true});
+var stationList = JSON.parse(stationJson);
 var points = buildTree(stationList.StationList.Station);
+
+//let xmlData = fs.readFileSync("./stations.xml");
+//var stationList = parser.toJson(xmlData, {object: true});
+//var points = buildTree(stationList.StationList.Station);
 
 exports.lookup_stations = function(req, res) {
   var lon = req.body.lon;
