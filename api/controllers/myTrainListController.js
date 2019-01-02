@@ -1,14 +1,9 @@
 const fs = require("fs");
 const parser = require("xml2json");
-const rp = require('request-promise');
-const stationJson = require('../../stations.json');
+const rp = require('request-promise-native');
+const stationList = require('../../stations.json');
 
-var stationList = JSON.parse(stationJson);
 var points = buildTree(stationList.StationList.Station);
-
-//let xmlData = fs.readFileSync("./stations.xml");
-//var stationList = parser.toJson(xmlData, {object: true});
-//var points = buildTree(stationList.StationList.Station);
 
 exports.lookup_stations = function(req, res) {
   var lon = req.body.lon;
@@ -31,8 +26,8 @@ exports.lookup_trains = function lookup_trains(req, res) {
     showDepartureBoard(stations[2].station.crs, stations[0].station.crs).catch(err => console.log(err)),
     showDepartureBoard(stations[2].station.crs, stations[1].station.crs).catch(err => console.log(err))
   ])
-  .then(function(responces) {
-    res.json(processDepartureBoards(responces, stations));
+  .then(function(services) {
+    res.json(processDepartureBoards(services, stations));
   })
   .catch(function(err) {
     console.log('error: ' + err);
@@ -40,12 +35,11 @@ exports.lookup_trains = function lookup_trains(req, res) {
 
 };
 
-function processDepartureBoards(responces, stations) {
+function processDepartureBoards(services, stations) {
   answer = {'stations' : stations};
   var trains = [];
-  for(let responce of responces) {
-    let services = parser.toJson(responce, {object:true});
-    let trainList = showTrains(services);
+  for(let service of services) {
+    let trainList = showTrains(service);
     trains = trains.concat(trainList);
   }
   answer.trains = trains;
@@ -120,7 +114,10 @@ async function showDepartureBoard(src, dest) {
       headers: {
         'User-Agent':       'Super Agent/0.0.1',
         'Content-Type':     'text/xml'},
-      body: payload
+      body: payload,
+      transform: function (body) {
+        return parser.toJson(body, {object:true});
+      }
   }
 
   try {
